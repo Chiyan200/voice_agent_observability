@@ -48,6 +48,8 @@ class TimestampMs(BaseModel):
     end_time: int = Field(..., description="Epoch milliseconds")
 
 
+from typing import Optional
+
 # ---------------------------------------------------------------------------
 # Kafka Event Payloads
 # ---------------------------------------------------------------------------
@@ -57,6 +59,7 @@ class CallInitEvent(BaseModel):
     call_id: str
     user_id: str
     call_type: CallType
+    user_call_recording: bool = True
     initiated_at: int = Field(default_factory=lambda: int(time.time() * 1000))
 
 
@@ -69,6 +72,12 @@ class ObservationEvent(BaseModel):
     content: str
     duration_ms: int
     timestamp: TimestampMs
+    audio_b64: Optional[str] = None
+    tool_name: Optional[str] = None
+    tool_input: Optional[str] = None
+    tool_output: Optional[str] = None
+    tool_status: Optional[str] = None
+    detected_emotion: Optional[str] = None
 
 
 class CallCloseEvent(BaseModel):

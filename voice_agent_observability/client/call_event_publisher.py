@@ -94,15 +94,17 @@ class CallEventPublisher:
         call_id: str,
         user_id: str,
         call_type: CallType,
+        user_call_recording: bool = True,
     ) -> None:
         """Emit when WebSocket connection opens."""
         event = CallInitEvent(
             call_id=call_id,
             user_id=user_id,
             call_type=call_type,
+            user_call_recording=user_call_recording,
         )
         await self._publish(TOPIC_CALL_INIT, call_id, event.model_dump())
-        logger.info("emit_call_started call_id=%s", call_id)
+        logger.info("emit_call_started call_id=%s user_call_recording=%s", call_id, user_call_recording)
 
     async def emit_call_ended(
         self,
@@ -137,9 +139,18 @@ class CallEventPublisher:
         async with publisher.track(call_id, turn_id, ComponentType.STT, RoleType.USER) as ctx:
             transcript = await stt_engine.transcribe(audio)
             ctx["content"] = transcript          # ← set output before exiting
+            ctx["audio_b64"] = audio_b64         # ← optionally set audio payload
         """
         start_ms = int(time.time() * 1000)
-        ctx: dict = {"content": content}
+        ctx: dict = {
+            "content": content,
+            "audio_b64": None,
+            "tool_name": None,
+            "tool_input": None,
+            "tool_output": None,
+            "tool_status": None,
+            "detected_emotion": None
+        }
 
         try:
             yield ctx
@@ -153,6 +164,12 @@ class CallEventPublisher:
                 content=ctx["content"],
                 duration_ms=end_ms - start_ms,
                 timestamp=TimestampMs(start_time=start_ms, end_time=end_ms),
+                audio_b64=ctx.get("audio_b64"),
+                tool_name=ctx.get("tool_name"),
+                tool_input=ctx.get("tool_input"),
+                tool_output=ctx.get("tool_output"),
+                tool_status=ctx.get("tool_status"),
+                detected_emotion=ctx.get("detected_emotion"),
             )
             await self._publish(TOPIC_CALL_OBSERVATION, call_id, event.model_dump())
             logger.debug(

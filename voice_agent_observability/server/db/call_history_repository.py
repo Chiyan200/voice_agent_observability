@@ -100,3 +100,8 @@ class CallHistoryRepository:
         if not success:
             logger.warning("set_call_duration: no document found for call_id=%s", call_id)
         return success
+
+    async def get_call(self, call_id: str) -> CallHistoryDict | None:
+        """Retrieve a call history document by call_id."""
+        result = await self._collection.find_one({"_id": call_id})
+        return result

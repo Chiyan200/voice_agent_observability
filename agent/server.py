@@ -175,8 +175,9 @@ def generate_response(user_input: str) -> str:
         logger.error("LLM Generation Error", extra={"extra_data": {"error": str(e)}})
         return "I encountered an unexpected error. Please try again."
 
+
 @app.websocket("/ws/agent")
-async def websocket_agent(websocket: WebSocket):
+async def websocket_agent(websocket: WebSocket, user_call_recording: bool = True):
     """WebSocket endpoint for voice agent communication."""
     await websocket.accept()
     client_id = id(websocket)
@@ -193,8 +194,8 @@ async def websocket_agent(websocket: WebSocket):
             kafka_servers = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
             publisher = CallEventPublisher(bootstrap_servers=kafka_servers)
             await publisher.start()
-            await publisher.emit_call_started(call_id, user_id, CallType.WEB_AGENT)
-            logger.info("Observability started", extra={"extra_data": {"call_id": call_id, "user_id": user_id}})
+            await publisher.emit_call_started(call_id, user_id, CallType.WEB_AGENT, user_call_recording)
+            logger.info("Observability started", extra={"extra_data": {"call_id": call_id, "user_id": user_id, "user_call_recording": user_call_recording}})
         except Exception as e:
             logger.error("Failed to start Kafka event publisher. Observability disabled.", extra={"extra_data": {"error": str(e)}})
             publisher = None
@@ -217,6 +218,7 @@ async def websocket_agent(websocket: WebSocket):
                     async with publisher.track(call_id, turn_id, ComponentType.STT, RoleType.USER) as ctx:
                         transcribed_text = transcribe_audio(audio_bytes)
                         ctx["content"] = transcribed_text or ""
+                        ctx["audio_b64"] = data["audio"]
                 else:
                     transcribed_text = transcribe_audio(audio_bytes)
                 
@@ -229,14 +231,64 @@ async def websocket_agent(websocket: WebSocket):
                     "audio_size_kb": round(len(audio_bytes) / 1024, 2)
                 }})
                 
-                # 2. Generate AI Response (LLM)
+                # 2. Generate AI Response (LLM) or Tool Call + LLM Response
                 ai_response = None
-                if publisher:
-                    async with publisher.track(call_id, turn_id, ComponentType.LLM, RoleType.ASSISTANT) as ctx:
-                        ai_response = await asyncio.to_thread(generate_response, transcribed_text)
-                        ctx["content"] = ai_response or ""
+                is_tool_call = False
+                
+                # Check for tool call trigger
+                if transcribed_text and any(word in transcribed_text.lower() for word in ["balance", "account"]):
+                    is_tool_call = True
+                    # Extract account ID
+                    import re
+                    match = re.search(r'\b\d{5}\b', transcribed_text)
+                    account_id = match.group(0) if match else "99999"
+                    
+                    if "12345" in transcribed_text:
+                        account_id = "12345"
+                    elif "99999" in transcribed_text:
+                        account_id = "99999"
+                        
+                    tool_result = ""
+                    # 2a. Execute and track the tool call
+                    if publisher:
+                        async with publisher.track(call_id, turn_id, ComponentType.TOOL_CALL, RoleType.ASSISTANT) as tool_ctx:
+                            tool_ctx["tool_name"] = "check_account_balance"
+                            tool_ctx["tool_input"] = json.dumps({"account_id": account_id})
+                            await asyncio.sleep(0.15)  # simulate network/db latency
+                            try:
+                                if account_id == "12345":
+                                    balance = "$1,250"
+                                    tool_ctx["tool_output"] = json.dumps({"balance": balance})
+                                    tool_ctx["tool_status"] = "success"
+                                    tool_result = f"success: balance is {balance}"
+                                else:
+                                    raise ValueError(f"Invalid account ID: {account_id}")
+                            except Exception as exc:
+                                tool_ctx["tool_output"] = str(exc)
+                                tool_ctx["tool_status"] = "failure"
+                                tool_result = f"failure: {str(exc)}"
+                    else:
+                        if account_id == "12345":
+                            tool_result = "success: balance is $1,250"
+                        else:
+                            tool_result = f"failure: Invalid account ID: {account_id}"
+                            
+                    # 2b. Formulate LLM prompt with tool result
+                    llm_prompt = f"The user asked to check their balance for account {account_id}. The tool call returned: {tool_result}. Please formulate a very short, polite voice response informing them of the status."
+                    if publisher:
+                        async with publisher.track(call_id, turn_id, ComponentType.LLM, RoleType.ASSISTANT) as ctx:
+                            ai_response = await asyncio.to_thread(generate_response, llm_prompt)
+                            ctx["content"] = ai_response or ""
+                    else:
+                        ai_response = await asyncio.to_thread(generate_response, llm_prompt)
                 else:
-                    ai_response = await asyncio.to_thread(generate_response, transcribed_text)
+                    # Generic LLM response without tool call
+                    if publisher:
+                        async with publisher.track(call_id, turn_id, ComponentType.LLM, RoleType.ASSISTANT) as ctx:
+                            ai_response = await asyncio.to_thread(generate_response, transcribed_text)
+                            ctx["content"] = ai_response or ""
+                    else:
+                        ai_response = await asyncio.to_thread(generate_response, transcribed_text)
                 
                 # 3. Convert to audio (TTS)
                 response_audio = None
@@ -244,6 +296,8 @@ async def websocket_agent(websocket: WebSocket):
                     async with publisher.track(call_id, turn_id, ComponentType.TTS, RoleType.ASSISTANT) as ctx:
                         response_audio = text_to_audio(ai_response)
                         ctx["content"] = ai_response or ""
+                        if response_audio:
+                            ctx["audio_b64"] = base64.b64encode(response_audio).decode('utf-8')
                 else:
                     response_audio = text_to_audio(ai_response)
                 

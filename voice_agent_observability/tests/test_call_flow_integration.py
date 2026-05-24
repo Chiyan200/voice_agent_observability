@@ -73,6 +73,20 @@ async def mock_llm_engine(
 # Simulated WebSocket session
 # ---------------------------------------------------------------------------
 
+def generate_mock_wav_base64(frequency=440, duration_sec=0.5, sr=16000):
+    import io
+    import numpy as np
+    import soundfile as sf
+    import base64
+    
+    t = np.linspace(0, duration_sec, int(sr * duration_sec))
+    data = 0.5 * np.sin(2 * np.pi * frequency * t)
+    
+    wav_io = io.BytesIO()
+    sf.write(wav_io, data, sr, format="WAV", subtype="PCM_16")
+    return base64.b64encode(wav_io.getvalue()).decode('utf-8')
+
+
 async def simulate_websocket_session() -> None:
     CALL_ID = "call_integration_test_001"
     TURN_ID = "turn_001"
@@ -89,6 +103,7 @@ async def simulate_websocket_session() -> None:
         call_id=CALL_ID,
         user_id="user_77",
         call_type=CallType.WEB_AGENT,
+        user_call_recording=True,
     )
 
     # ── STT ─────────────────────────────────────────────────────────────
@@ -101,6 +116,7 @@ async def simulate_websocket_session() -> None:
     ) as ctx:
         transcript = await mock_stt_engine()
         ctx["content"] = transcript
+        ctx["audio_b64"] = generate_mock_wav_base64(frequency=440, duration_sec=0.5, sr=16000)
 
     logger.info("STT result: '%s'", transcript)
 
@@ -116,6 +132,19 @@ async def simulate_websocket_session() -> None:
         ctx["content"] = response
 
     logger.info("LLM result: '%s'", response)
+
+    # ── TTS ─────────────────────────────────────────────────────────────
+    logger.info("=== STEP 3.5: TTS ===")
+    async with publisher.track(
+        call_id=CALL_ID,
+        turn_id=TURN_ID,
+        component_type=ComponentType.TTS,
+        role=RoleType.ASSISTANT,
+    ) as ctx:
+        logger.info("[TTS] Converting text to audio...")
+        await asyncio.sleep(1)
+        ctx["content"] = response
+        ctx["audio_b64"] = generate_mock_wav_base64(frequency=880, duration_sec=0.5, sr=24000)
 
     # ── WebSocket CLOSE ──────────────────────────────────────────────────
     logger.info("=== STEP 4: WebSocket CLOSE ===")

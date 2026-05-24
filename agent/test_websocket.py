@@ -45,8 +45,9 @@ MAX_RETRIES = 3
 
 AUDIO_SEQUENCE = [
     {"order": 1, "file": "utils/greet.wav"},
-    {"order": 2, "file": "utils/mid.wav"},
-    {"order": 3, "file": "utils/end.wav"},
+    {"order": 2, "file": "utils/check_balance_success.wav"},
+    {"order": 3, "file": "utils/check_balance_failure.wav"},
+    {"order": 4, "file": "utils/end.wav"},
 ]
 
 def wav_to_pcm16k(raw_wav_path: str):
